@@ -1,3 +1,5 @@
+#![allow(clippy::macro_metavars_in_unsafe)]
+#![allow(clippy::cast_possible_truncation)]
 #![doc = include_str!("../README.md")]
 // MIT License
 //
@@ -24,7 +26,7 @@
 #![feature(asm_const, maybe_uninit_uninit_array, maybe_uninit_array_assume_init)]
 use std::collections::HashMap;
 
-use const_fnv1a_hash::fnv1a_hash_str_64;
+pub use const_fnv1a_hash::fnv1a_hash_str_64;
 use exe::{Address, ImageExportDirectory, ThunkData};
 use once_cell::sync::Lazy;
 use phnt::ext::NtCurrentTeb;
@@ -61,10 +63,10 @@ pub static SSN_MAP: Lazy<HashMap<u64, u32>> = Lazy::new(|| unsafe {
     for (name, thunk) in export_directory.get_export_map(&image).unwrap_unchecked() {
         if let ThunkData::Function(thunk) = thunk {
             let thunk_bytes = thunk.as_ptr(&image).unwrap_unchecked();
-            if (thunk_bytes as *const u32).read_unaligned() == PROLOGUE_BYTES
-                && (thunk_bytes.add(0x12) as *const u16).read_unaligned() == SYSCALL_BYTES
+            if thunk_bytes.cast::<u32>().read_unaligned() == PROLOGUE_BYTES
+                && thunk_bytes.add(0x12).cast::<u16>().read_unaligned() == SYSCALL_BYTES
             {
-                let sysno: u32 = (thunk_bytes.add(4) as *const u32).read_unaligned();
+                let sysno: u32 = thunk_bytes.add(4).cast::<u32>().read_unaligned();
                 ssn_map.insert(fnv1a_hash_str_64(name), sysno);
             }
         }
@@ -84,9 +86,8 @@ macro_rules! syscall {
 
    ($fun:ident($($args:expr$(,)?)*)) => {{
       #[allow(unreachable_code, unused_unsafe, unused_mut, unused_assignments, unused_variables)]
-      unsafe {
          if cfg!(feature="windows-syscall-use-linked") {
-            $fun($($args,)*) as NTSTATUS
+            unsafe { $fun($($args,)*) as NTSTATUS }
          } else {
             use core::{sync::atomic::{AtomicUsize, Ordering}, mem::MaybeUninit, arch::asm};
 
@@ -95,21 +96,24 @@ macro_rules! syscall {
             //
             // Syscalls with arbitrary arguments are only allowed when the `windows-syscall-typesafe` feature
             // is disabled or the `windows-syscall-use-linked` feature is active (debug builds)
-            if cfg!(feature="windows-syscall-typesafe") {
-               if false {
-                  $fun($($args,)*);
+            unsafe {
+               if cfg!(feature="windows-syscall-typesafe") {
+                  if false {
+                     $fun($($args,)*);
+                  }
                }
             }
 
-            const FUN_HASH: u64 = const_fnv1a_hash::fnv1a_hash_str_64(stringify!($fun));
+            const FUN_HASH: u64 = $crate::fnv1a_hash_str_64(stringify!($fun));
             static mut SSN: AtomicUsize = AtomicUsize::new(!0usize);
-            if SSN.load(Ordering::Acquire) == !0 {
-               SSN.store(*(*$crate::SSN_MAP).get(&FUN_HASH).unwrap_unchecked() as usize, Ordering::Release);
-            }
+            unsafe {
+               if SSN.load(Ordering::Acquire) == !0 {
+                  SSN.store(*(*$crate::SSN_MAP).get(&FUN_HASH).unwrap_unchecked() as usize, Ordering::Release);
+               }
 
-            syscall!(@bind $($args)*) as NTSTATUS
+               syscall!(@bind $($args)*) as NTSTATUS
+            }
          }
-      }
    }};
 
    // Syscalls without stack arguments are directly emitted
@@ -196,9 +200,11 @@ mod tests {
         syscall!(NtClose(handle))
     }
 
+    #[allow(clippy::unreadable_literal)]
     #[test]
     fn basic() {
         const STATUS_INVALID_HANDLE: i32 = 0xC0000008u32 as i32;
+
         const INVALID_HANDLE: *mut std::ffi::c_void = core::ptr::null_mut();
         assert_eq!(call_nt_close(INVALID_HANDLE), STATUS_INVALID_HANDLE);
 
