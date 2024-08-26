@@ -23,12 +23,11 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 //
-#![feature(asm_const, maybe_uninit_uninit_array, maybe_uninit_array_assume_init)]
+#![feature(maybe_uninit_uninit_array, maybe_uninit_array_assume_init)]
 use std::collections::HashMap;
 
 pub use const_fnv1a_hash::fnv1a_hash_str_64;
 use exe::{Address, ImageExportDirectory, ThunkData};
-use once_cell::sync::Lazy;
 use phnt::ext::NtCurrentTeb;
 use phnt::ffi::LDR_DATA_TABLE_ENTRY;
 
@@ -54,25 +53,49 @@ pub fn get_ntdll_base() -> *mut std::ffi::c_void {
     }
 }
 
-pub static SSN_MAP: Lazy<HashMap<u64, u32>> = Lazy::new(|| unsafe {
-    let mut ssn_map = HashMap::new();
-    let ntdll_base = get_ntdll_base() as *const u8;
-    let image = exe::PtrPE::from_memory(ntdll_base).unwrap_unchecked();
-    let export_directory = ImageExportDirectory::parse(&image).unwrap_unchecked();
+pub static mut SSN_MAP: Option<HashMap<u64, u32>> = None;
 
-    for (name, thunk) in export_directory.get_export_map(&image).unwrap_unchecked() {
-        if let ThunkData::Function(thunk) = thunk {
-            let thunk_bytes = thunk.as_ptr(&image).unwrap_unchecked();
-            if thunk_bytes.cast::<u32>().read_unaligned() == PROLOGUE_BYTES
-                && thunk_bytes.add(0x12).cast::<u16>().read_unaligned() == SYSCALL_BYTES
-            {
-                let sysno: u32 = thunk_bytes.add(4).cast::<u32>().read_unaligned();
-                ssn_map.insert(fnv1a_hash_str_64(name), sysno);
+pub fn initialize_ssn_map() {
+    unsafe {
+        let mut ssn_map = HashMap::new();
+        let ntdll_base = get_ntdll_base() as *const u8;
+        let image = exe::PtrPE::from_memory(ntdll_base).unwrap_unchecked();
+        let export_directory = ImageExportDirectory::parse(&image).unwrap_unchecked();
+
+        for (name, thunk) in export_directory.get_export_map(&image).unwrap_unchecked() {
+            if let ThunkData::Function(thunk) = thunk {
+                let thunk_bytes = thunk.as_ptr(&image).unwrap_unchecked();
+                if thunk_bytes.cast::<u32>().read_unaligned() == PROLOGUE_BYTES
+                    && thunk_bytes.add(0x12).cast::<u16>().read_unaligned() == SYSCALL_BYTES
+                {
+                    let sysno: u32 = thunk_bytes.add(4).cast::<u32>().read_unaligned();
+                    ssn_map.insert(fnv1a_hash_str_64(name), sysno);
+                }
             }
         }
+        SSN_MAP = Some(ssn_map);
     }
-    ssn_map
-});
+}
+
+// pub static SSN_MAP: Lazy<HashMap<u64, u32>> = Lazy::new(|| unsafe {
+//     let mut ssn_map = HashMap::new();
+//     let ntdll_base = get_ntdll_base() as *const u8;
+//     let image = exe::PtrPE::from_memory(ntdll_base).unwrap_unchecked();
+//     let export_directory = ImageExportDirectory::parse(&image).unwrap_unchecked();
+
+//     for (name, thunk) in export_directory.get_export_map(&image).unwrap_unchecked() {
+//         if let ThunkData::Function(thunk) = thunk {
+//             let thunk_bytes = thunk.as_ptr(&image).unwrap_unchecked();
+//             if thunk_bytes.cast::<u32>().read_unaligned() == PROLOGUE_BYTES
+//                 && thunk_bytes.add(0x12).cast::<u16>().read_unaligned() == SYSCALL_BYTES
+//             {
+//                 let sysno: u32 = thunk_bytes.add(4).cast::<u32>().read_unaligned();
+//                 ssn_map.insert(fnv1a_hash_str_64(name), sysno);
+//             }
+//         }
+//     }
+//     ssn_map
+// });
 
 // TODO(chore): Document, document, document...
 #[cfg(target_arch = "x86_64")]
@@ -105,10 +128,17 @@ macro_rules! syscall {
             }
 
             const FUN_HASH: u64 = $crate::fnv1a_hash_str_64(stringify!($fun));
-            static mut SSN: AtomicUsize = AtomicUsize::new(!0usize);
+            static SSN: AtomicUsize = AtomicUsize::new(!0usize);
             unsafe {
                if SSN.load(Ordering::Acquire) == !0 {
-                  SSN.store(*(*$crate::SSN_MAP).get(&FUN_HASH).unwrap_unchecked() as usize, Ordering::Release);
+                  let ssn_map = match &$crate::SSN_MAP{
+                     Some(val) => val,
+                     None => {
+                        $crate::initialize_ssn_map();
+                        &$crate::SSN_MAP.as_ref().unwrap()
+                     }
+                  };
+                  SSN.store(*ssn_map.get(&FUN_HASH).unwrap_unchecked() as usize, Ordering::Release);
                }
 
                syscall!(@bind $($args)*) as NTSTATUS
