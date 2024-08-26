@@ -77,26 +77,6 @@ pub fn initialize_ssn_map() {
     }
 }
 
-// pub static SSN_MAP: Lazy<HashMap<u64, u32>> = Lazy::new(|| unsafe {
-//     let mut ssn_map = HashMap::new();
-//     let ntdll_base = get_ntdll_base() as *const u8;
-//     let image = exe::PtrPE::from_memory(ntdll_base).unwrap_unchecked();
-//     let export_directory = ImageExportDirectory::parse(&image).unwrap_unchecked();
-
-//     for (name, thunk) in export_directory.get_export_map(&image).unwrap_unchecked() {
-//         if let ThunkData::Function(thunk) = thunk {
-//             let thunk_bytes = thunk.as_ptr(&image).unwrap_unchecked();
-//             if thunk_bytes.cast::<u32>().read_unaligned() == PROLOGUE_BYTES
-//                 && thunk_bytes.add(0x12).cast::<u16>().read_unaligned() == SYSCALL_BYTES
-//             {
-//                 let sysno: u32 = thunk_bytes.add(4).cast::<u32>().read_unaligned();
-//                 ssn_map.insert(fnv1a_hash_str_64(name), sysno);
-//             }
-//         }
-//     }
-//     ssn_map
-// });
-
 // TODO(chore): Document, document, document...
 #[cfg(target_arch = "x86_64")]
 #[macro_export]
